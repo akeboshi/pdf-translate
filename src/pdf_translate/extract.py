@@ -194,7 +194,8 @@ def _make_unit(page_no, page_rect, lines, rect, line_pitch=None, limit_x1=None, 
     if len(lines) > 1:
         x0s = [l["bbox"][0] for l in lines]
         x1s = [l["bbox"][2] for l in lines]
-        if max(x1s) - min(x1s) <= 2 and max(x0s) - min(x0s) > 5:
+        # flush right with a ragged left edge; a justified paragraph's indented first line does not count
+        if max(x1s) - min(x1s) <= 2 and max(x0s[1:]) - min(x0s) > 20:
             align = "right"
     cx = (rect.x0 + rect.x1) / 2
     if len(lines) <= 2 and abs(cx - page_rect.width / 2) < 3 and rect.width < page_rect.width * 0.6:
@@ -231,6 +232,37 @@ def _is_display(block) -> bool:
     return 1 < len(block["lines"]) <= 4 and len(sizes) == 1 and min(sizes) >= 14
 
 
+def _line_text(line) -> str:
+    return "".join(s["text"] for s in line["spans"]).strip()
+
+
+def _continues(prev, cur) -> bool:
+    """True when `cur` is the next part of the same paragraph that PyMuPDF split into its own block."""
+    a, b = prev["lines"][-1], cur["lines"][0]
+    if not (_horizontal(a) and _horizontal(b)) or _line_size(a) != _line_size(b):
+        return False
+    if re.search(r"[.!?:;\u201d\u2019\")]$", _line_text(a)) or not _line_text(b):
+        return False
+    height = a["bbox"][3] - a["bbox"][1]
+    if not (-height * 0.5 < b["bbox"][1] - a["bbox"][1] < height * 1.5):
+        return False
+    # the previous line must run to the shared right edge, otherwise it ended the paragraph (list items, labels)
+    right = max(prev["bbox"][2], cur["bbox"][2])
+    return a["bbox"][2] >= right - 3 and min(a["bbox"][2], b["bbox"][2]) > max(a["bbox"][0], b["bbox"][0])
+
+
+def _merge_continued(blocks):
+    merged = []
+    for block in blocks:
+        if merged and _continues(merged[-1], block):
+            prev = merged[-1]
+            bbox = pymupdf.Rect(prev["bbox"]) | pymupdf.Rect(block["bbox"])
+            merged[-1] = {**prev, "lines": prev["lines"] + block["lines"], "bbox": tuple(bbox)}
+        else:
+            merged.append(block)
+    return merged
+
+
 def _rotated_frame(lines) -> tuple[float, tuple[float, float, float, float]]:
     """Angle (degrees, clockwise on the page) and the text box measured along the writing direction."""
     c, sn = lines[0]["dir"]
@@ -257,12 +289,12 @@ def extract_units(page: pymupdf.Page) -> list[Unit]:
     flags = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
     data = page.get_text("rawdict", flags=flags)
     units: list[Unit] = []
-    for block in data["blocks"]:
-        if block["type"] != 0 or not block["lines"]:
-            continue
+    blocks = [b for b in data["blocks"] if b["type"] == 0 and b["lines"]]
+    for block in blocks:
         for line in block["lines"]:
             for s in line["spans"]:
                 s["text"] = "".join(c["c"] for c in s["chars"])
+    for block in _merge_continued(blocks):
 
         rotated: dict[tuple[float, float], list] = {}
         for line in block["lines"]:

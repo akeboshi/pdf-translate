@@ -1,4 +1,5 @@
 import io
+import os
 import math
 import platform
 from dataclasses import dataclass
@@ -35,6 +36,11 @@ def load_fonts(serif: str | None, sans: str | None, sans_bold: str | None) -> Fo
         candidates["serif"] += [f"{sysdir}/ヒラギノ明朝 ProN.ttc"]
         candidates["sans"] += [f"{sysdir}/ヒラギノ角ゴシック W3.ttc"]
         candidates["sansbold"] += [f"{sysdir}/ヒラギノ角ゴシック W6.ttc"]
+    elif platform.system() == "Windows":
+        windir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        candidates["serif"] += [str(windir / n) for n in ("yumin.ttf", "msmincho.ttc")]
+        candidates["sans"] += [str(windir / n) for n in ("YuGothR.ttc", "YuGothM.ttc", "meiryo.ttc", "msgothic.ttc")]
+        candidates["sansbold"] += [str(windir / n) for n in ("YuGothB.ttc", "meiryob.ttc")]
     else:
         for d in ["/usr/share/fonts/opentype/noto", "/usr/share/fonts/noto-cjk", "/usr/share/fonts/google-noto-cjk"]:
             candidates["serif"] += [f"{d}/NotoSerifCJK-Regular.ttc"]

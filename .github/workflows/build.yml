@@ -1,0 +1,81 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: pdf-translate-windows-x64.zip
+          - os: macos-latest
+            asset: pdf-translate-macos-arm64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --dev
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: >-
+          uv run pyinstaller --noconfirm --onefile --name pdf-translate
+          --collect-all pymupdf packaging/entry.py
+
+      # --windowed makes a double-clickable .app; the binary inside still works as a CLI
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          uv run pyinstaller --noconfirm --windowed --name pdf-translate
+          --osx-bundle-identifier io.github.pdf-translate
+          --collect-all pymupdf packaging/entry.py
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          uv run python -c "import pymupdf; d = pymupdf.open(); p = d.new_page(); p.insert_text((72, 72), 'Hello world. This is a test page.'); d.save('smoke.pdf')"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            exe=dist/pdf-translate.exe
+          else
+            exe=dist/pdf-translate.app/Contents/MacOS/pdf-translate
+          fi
+          "$exe" smoke.pdf -o smoke.ja.pdf --backend dummy --no-toc
+          test -s smoke.ja.pdf
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/pdf-translate.exe -DestinationPath ${{ matrix.asset }}
+
+      # ditto keeps the bundle's symlinks and permissions, which a plain zip would break
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/pdf-translate.app ${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" assets/*
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
