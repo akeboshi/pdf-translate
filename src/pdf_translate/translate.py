@@ -14,13 +14,13 @@ SYSTEM_PROMPT = """You are a professional technical translator. Translate Englis
 
 Rules:
 - Use the である調 (plain, written style) consistently.
-- Keep the inline HTML tags (<i>, <b>, <code>, <sup>, <span style=...>) and wrap the corresponding Japanese words with them. Never invent new tags.
+- Keep the inline HTML tags (<i>, <b>, <code>, <sup>, <span style=...>, <a href=...>) and wrap the corresponding Japanese words with them. Keep every <a href> value exactly as given. Never invent new tags.
 - <br> marks a deliberate line break (e.g. on a cover). Keep the same number of <br> and split the Japanese at the corresponding points.
 - Never translate the contents of <code> tags, SQL keywords, commands, identifiers, file names, URLs, numbers, or units.
 - Keep product and technology names in their original spelling (MySQL, InnoDB, Linux, Amazon Web Services, etc.).
 - Headings, captions ("Figure 1-1." -> "図1-1", "Table 2-1." -> "表2-1", "Example 3-2." -> "例3-2"), and running headers ("Chapter 2:" -> "第2章") should be translated concisely.
 - A segment may be a fragment (a table cell, label, or a sentence broken across pages). Translate it as-is without completing or merging it with other segments.
-- If a segment should not be translated (e.g. a proper noun alone, code), return it unchanged.
+- Translate document titles, running headers and table headings too, even when they look like a title of the work. Keep English only for a proper noun alone, code, a URL, or a bibliographic reference entry; return those unchanged.
 - Return exactly one translation for every input id."""
 
 SCHEMA = {
@@ -39,6 +39,27 @@ SCHEMA = {
     "required": ["translations"],
     "additionalProperties": False,
 }
+
+
+ALLOWED_TAG = re.compile(r'</?(i|b|code|sup|br)\s*/?>|<span style="color:#[0-9a-fA-F]{6}">|</span>'
+                         r'|<a href="#L\d+">|</a>')
+
+
+def clean_html(text: str) -> str:
+    """Repair the inline markup a model sends back before MuPDF parses it.
+
+    Some models over-escape attribute quotes (style=\\"...\\"), which MuPDF rejects as a CSS syntax error.
+    Anything that is still not one of the tags we sent out is dropped, keeping its text.
+    """
+    out = []
+    for part in re.split(r"(</?[A-Za-z][^<>]*>)", text):
+        if part.startswith("<") and part.endswith(">") and re.match(r"</?[A-Za-z]", part):
+            tag = part.replace('\\"', '"').replace("\\'", "'")
+            out.append(tag if ALLOWED_TAG.fullmatch(tag) else "")
+        else:
+            # a bare < or > in the text (e.g. "a < b") must not be read as markup
+            out.append(part.replace("<", "&lt;").replace(">", "&gt;"))
+    return "".join(out)
 
 
 def build_system_prompt(glossary: str | None) -> str:
@@ -256,13 +277,25 @@ class AgyBackend:
 class DummyBackend:
     """Layout check without an LLM: replaces text with Japanese filler of similar length."""
 
+    filler = "これはレイアウト確認用のダミー翻訳文である。"
+
+    def _fill(self, text: str) -> str:
+        n = max(1, int(len(re.sub(r"<[^>]+>", "", text)) * 0.55))
+        return (self.filler * (n // len(self.filler) + 1))[:n]
+
     def __call__(self, texts: list[str]) -> list[str | None]:
-        filler = "これはレイアウト確認用のダミー翻訳文である。"
         out = []
         for t in texts:
-            plain = re.sub(r"<[^>]+>", "", t)
-            n = max(2, int(len(plain) * 0.55))
-            out.append((filler * (n // len(filler) + 1))[:n])
+            # keep <a> tags like a real translation would, so link placement can be checked offline
+            parts = re.split(r'(<a href="[^"]*">.*?</a>)', t)
+            pieces = []
+            for part in parts:
+                m = re.fullmatch(r'(<a href="[^"]*">)(.*?)</a>', part)
+                if m:
+                    pieces.append(f"{m.group(1)}{self._fill(m.group(2))}</a>")
+                elif part.strip():
+                    pieces.append(self._fill(part))
+            out.append("".join(pieces) or self._fill(t))
         return out
 
 

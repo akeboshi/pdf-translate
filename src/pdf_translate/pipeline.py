@@ -2,7 +2,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pymupdf
@@ -16,6 +16,7 @@ from .translate import (
     DummyBackend,
     TranslationCache,
     batches,
+    clean_html,
 )
 
 BACKENDS = ["agy", "claude-cli", "anthropic", "dummy"]
@@ -101,9 +102,7 @@ class Translator:
         if not pending:
             return results
 
-        groups = [[pending[j] for j in b] for b in batches([texts[i] for i in pending], self.opts.batch_chars, 80)]
-        self.log(f"[{label}] {len(pending)} segments to translate in {len(groups)} requests "
-                 f"({len(texts) - len(pending)} cached)")
+        self.log(f"[{label}] {len(pending)} segments to translate ({len(texts) - len(pending)} cached)")
 
         def run(group: list[int]):
             for attempt in range(3):
@@ -116,17 +115,27 @@ class Translator:
                     time.sleep(2 ** attempt)
             return group, [None] * len(group)
 
-        done = 0
-        self.progress(label, 0, len(groups))
-        with ThreadPoolExecutor(max_workers=self.opts.workers) as pool:
-            for fut in as_completed([pool.submit(run, g) for g in groups]):
-                group, outs = fut.result()
-                for i, out in zip(group, outs):
-                    if out is not None and out.strip():
-                        results[i] = out
-                        self.cache.put(keys[i], out)
-                done += 1
-                self.progress(label, done, len(groups))
+        # models occasionally drop a few ids from a long batch; ask again for just those, in smaller batches
+        for round_no, (max_chars, max_items) in enumerate(
+                [(self.opts.batch_chars, 80), (max(500, self.opts.batch_chars // 3), 20), (500, 5)]):
+            if not pending or self.cancel.is_set():
+                break
+            groups = [[pending[j] for j in b] for b in batches([texts[i] for i in pending], max_chars, max_items)]
+            stage = label if round_no == 0 else f"{label} (retry {round_no})"
+            if round_no:
+                self.log(f"[{label}] {len(pending)} segments missing from the replies; retrying in {len(groups)} requests")
+            done = 0
+            self.progress(stage, 0, len(groups))
+            with ThreadPoolExecutor(max_workers=self.opts.workers) as pool:
+                for fut in as_completed([pool.submit(run, g) for g in groups]):
+                    group, outs = fut.result()
+                    for i, out in zip(group, outs):
+                        if out is not None and out.strip():
+                            results[i] = out
+                            self.cache.put(keys[i], out)
+                    done += 1
+                    self.progress(stage, done, len(groups))
+            pending = [i for i in pending if results[i] is None]
         if self.cancel.is_set():
             raise Cancelled
         return results
@@ -136,6 +145,14 @@ def run(opts: Options, log: Log = print, progress: Progress = lambda *_: None,
         cancel: threading.Event | None = None) -> Path:
     cancel = cancel or threading.Event()
     out = opts.output_path
+    if opts.backend == "agy" and not opts.model:
+        from .agy import latest_flash
+
+        # agy's own default may be a slow Pro model; pin the newest Flash so the cache key names the model too
+        model = latest_flash(opts.effort)
+        if model:
+            opts = replace(opts, model=model)
+            log(f"agy model: {model} (newest Flash; pass --model to choose another)")
     translator = Translator(opts, log, progress, cancel)
 
     doc = pymupdf.open(opts.input)
@@ -149,7 +166,7 @@ def run(opts: Options, log: Log = print, progress: Progress = lambda *_: None,
 
     outs = translator.translate([u.source for u in units], "body")
     for u, t in zip(units, outs):
-        u.translation = t
+        u.translation = clean_html(t) if t else t
     missing = sum(1 for t in outs if t is None)
 
     fonts = load_fonts(opts.serif_font, opts.sans_font, opts.sans_bold_font)

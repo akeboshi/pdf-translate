@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .agy import list_models
 from .pipeline import BACKENDS, Cancelled, Options, run
 
 BACKEND_LABELS = {
@@ -16,6 +17,7 @@ BACKEND_LABELS = {
     "dummy": "ダミー（レイアウト確認のみ）",
 }
 DEFAULT_MODEL = "（既定のモデル）"
+DEFAULT_AGY_MODEL = "（既定: 最新の Flash）"
 STATIC_MODELS = {
     "claude-cli": [("opus", "Opus（最新）"), ("sonnet", "Sonnet（最新）"), ("haiku", "Haiku（最新）")],
     "anthropic": [
@@ -25,22 +27,6 @@ STATIC_MODELS = {
         ("claude-fable-5-1", "Claude Fable 5.1"),
     ],
 }
-
-
-def list_agy_models() -> list[tuple[str, str]]:
-    from .translate import NO_WINDOW, find_cli
-
-    exe = find_cli("agy")
-    if not exe:
-        return []
-    proc = subprocess.run([exe, "models"], capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=60, creationflags=NO_WINDOW)
-    models = []
-    for line in proc.stdout.splitlines():
-        model_id, _, label = line.partition("\t")
-        if model_id.strip() and " " not in model_id.strip():
-            models.append((model_id.strip(), label.strip() or model_id.strip()))
-    return models
 
 
 STAGE_LABELS = {"body": "本文を翻訳中", "toc": "しおりを翻訳中", "layout": "ページを組版中"}
@@ -166,7 +152,7 @@ class App:
 
             def work():
                 try:
-                    models = list_agy_models()
+                    models = list_models()
                 except Exception:  # noqa: BLE001 - fall back to the CLI default model
                     models = []
                 self.events.put(("agy_models", models))
@@ -183,9 +169,10 @@ class App:
             self.model_combo.configure(values=[], state="disabled")
             self.model_var.set("モデル一覧を取得中…")
             return
-        self.model_combo.configure(values=[DEFAULT_MODEL] + [label for _, label in models],
+        default = DEFAULT_AGY_MODEL if self.backend == "agy" else DEFAULT_MODEL
+        self.model_combo.configure(values=[default] + [label for _, label in models],
                                    state="disabled" if disabled else "readonly")
-        self.model_var.set(DEFAULT_MODEL)
+        self.model_var.set(default)
 
     @property
     def model(self) -> str | None:
@@ -330,7 +317,10 @@ class App:
                 elif kind == "progress":
                     stage, done, total = payload
                     self.bar.configure(maximum=max(total, 1), value=done)
-                    self.status.configure(text=f"{STAGE_LABELS.get(stage, stage)}… {done}/{total}")
+                    label = STAGE_LABELS.get(stage.split(" (retry")[0], stage)
+                    if "(retry" in stage:
+                        label += "（抜けた分を再翻訳）"
+                    self.status.configure(text=f"{label}… {done}/{total}")
                 elif kind == "done":
                     self.result = payload
                     self.set_running(False)

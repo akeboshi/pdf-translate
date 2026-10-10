@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -39,3 +40,33 @@ def login_command(exe: str) -> list[str]:
     if sys.platform == "darwin":
         return ["open", "-a", "Terminal", exe]
     return ["x-terminal-emulator", "-e", exe]
+
+
+def list_models() -> list[tuple[str, str]]:
+    """(id, display name) pairs from `agy models`; empty when agy is missing or fails."""
+    exe = find_cli("agy")
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run([exe, "models"], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    models = []
+    for line in proc.stdout.splitlines():
+        model_id, _, label = line.partition("\t")
+        model_id = model_id.strip()
+        if model_id and " " not in model_id:
+            models.append((model_id, label.strip() or model_id))
+    return models
+
+
+def latest_flash(effort: str = "low", models: list[tuple[str, str]] | None = None) -> str | None:
+    """Newest Gemini Flash offered by agy, at the requested effort when that variant exists."""
+    found = []
+    for model_id, _ in models if models is not None else list_models():
+        m = re.fullmatch(r"gemini-(\d+(?:\.\d+)*)-flash(?:-(low|medium|high))?", model_id)
+        if m:
+            version = tuple(int(x) for x in m.group(1).split("."))
+            found.append((version, m.group(2) == effort, model_id))
+    return max(found)[2] if found else None

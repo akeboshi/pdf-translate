@@ -37,6 +37,7 @@ uv run pdf-translate
 uv run pdf-translate "High Performance MySQL.pdf" -o mysql.ja.pdf
 
 # Antigravity CLI (`agy`) を使う（事前に `agy` を一度起動してサインインしておく）
+# モデル未指定なら `agy models` の中で最新の Gemini Flash を使う（--effort の low/medium/high に合わせて選ぶ）
 uv run pdf-translate "High Performance MySQL.pdf" --backend agy
 
 # API キーの代わりにローカルの Claude Code (`claude -p`) を使う
