@@ -34,20 +34,20 @@ uv run pdf-translate
 
 ```sh
 # Claude API（ANTHROPIC_API_KEY が必要。既定モデル claude-opus-5-5）
-uv run pdf-translate "High Performance MySQL.pdf" -o mysql.ja.pdf
+uv run pdf-translate input.pdf -o output.ja.pdf
 
 # Antigravity CLI (`agy`) を使う（事前に `agy` を一度起動してサインインしておく）
 # モデル未指定なら `agy models` の中で最新の Gemini Flash を使う（--effort の low/medium/high に合わせて選ぶ）
-uv run pdf-translate "High Performance MySQL.pdf" --backend agy
+uv run pdf-translate input.pdf --backend agy
 
 # API キーの代わりにローカルの Claude Code (`claude -p`) を使う
-uv run pdf-translate "High Performance MySQL.pdf" --backend claude-cli --model sonnet
+uv run pdf-translate input.pdf --backend claude-cli --model sonnet
 
 # まず数ページだけ試す（選んだページだけを出力）
-uv run pdf-translate "High Performance MySQL.pdf" --pages 19-30 --only-selected -o sample.pdf
+uv run pdf-translate input.pdf --pages 19-30 --only-selected -o sample.pdf
 
 # LLM を呼ばずにレイアウトだけ確認する
-uv run pdf-translate "High Performance MySQL.pdf" --backend dummy --pages 1-40
+uv run pdf-translate input.pdf --backend dummy --pages 1-40
 ```
 
 主なオプション:
